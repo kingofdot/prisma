@@ -2331,10 +2331,13 @@
       { name: 'fnInputParams', type: 'text', options: [] },
       { name: 'fnOutputTarget', type: 'text', options: [] },
       { name: 'fnSyncCondition', type: 'text', options: [] },
+      { name: 'dataSource', type: 'model', options: [] },
     ];
 
     // metaStore: { [modelName]: { [fieldName]: { [header]: value } } }
     let metaStore = {};
+    // rowOrderStore: { [modelName]: [fieldName, ...] } — 사용자 지정 행 순서
+    let rowOrderStore = {};
     let selectedUiModel = null; // null = 헤더관리, 문자열 = 모델명
 
     function renderUiSidebar() {
@@ -2399,10 +2402,12 @@
           <select onchange="uiHeaderTypeChange(${i},this.value)" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg-primary);color:var(--text-primary);font-size:12px">
             <option value="text"${h.type === 'text' ? ' selected' : ''}>텍스트</option>
             <option value="combo"${h.type === 'combo' ? ' selected' : ''}>콤보박스</option>
+            <option value="model"${h.type === 'model' ? ' selected' : ''}>모델 참조</option>
           </select>
         </td>
         <td>
-          <input value="${h.options.join(',')}" placeholder="옵션1,옵션2,옵션3"
+          <input value="${h.type === 'model' ? '' : h.options.join(',')}"
+            placeholder="${h.type === 'model' ? '스키마 모델에서 자동 생성' : '옵션1,옵션2,옵션3'}"
             onchange="uiHeaderOptionsChange(${i},this.value)"
             ${h.type !== 'combo' ? 'disabled style="opacity:0.4"' : ''}
             style="width:100%;padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg-primary);color:var(--text-primary);font-size:12px;font-family:var(--font-mono);outline:none">
@@ -2427,32 +2432,58 @@
 
       if (!metaStore[selectedUiModel]) metaStore[selectedUiModel] = {};
 
-      const rows = model.fields.map(f => {
-        if (!metaStore[selectedUiModel][f.name]) metaStore[selectedUiModel][f.name] = {};
-        return { fieldName: f.name, meta: metaStore[selectedUiModel][f.name] };
+      // 행 순서 초기화: 아직 없으면 모델 필드 순으로 세팅
+      if (!rowOrderStore[selectedUiModel]) {
+        rowOrderStore[selectedUiModel] = model.fields.map(f => f.name);
+      } else {
+        // 새 필드 추가 반영
+        model.fields.forEach(f => { if (!rowOrderStore[selectedUiModel].includes(f.name)) rowOrderStore[selectedUiModel].push(f.name); });
+      }
+
+      const orderedFieldNames = rowOrderStore[selectedUiModel];
+      const rows = [];
+      orderedFieldNames.forEach(fn => {
+        if (!metaStore[selectedUiModel][fn]) metaStore[selectedUiModel][fn] = {};
+        const f = model.fields.find(f => f.name === fn);
+        rows.push({ fieldName: fn, meta: metaStore[selectedUiModel][fn], extraOnly: !f });
       });
+      // metaStore에만 있는 extra 행
       Object.keys(metaStore[selectedUiModel]).forEach(fn => {
-        if (!model.fields.find(f => f.name === fn)) {
+        if (!orderedFieldNames.includes(fn)) {
           rows.push({ fieldName: fn, meta: metaStore[selectedUiModel][fn], extraOnly: true });
         }
       });
 
-      const thHtml = uiHeaders.map(h => `<th style="white-space:nowrap">${h.name}${h.type === 'combo' ? '<span style="font-size:9px;color:var(--accent2);margin-left:3px">▼</span>' : ''}</th>`).join('');
+      const thHtml = uiHeaders.map(h => {
+        const badge = (h.type === 'combo' || h.type === 'model') ? `<span style="font-size:9px;color:var(--accent2);margin-left:3px">▼</span>` : '';
+        return `<th style="white-space:nowrap">${h.name}${badge}</th>`;
+      }).join('');
       let html = `<table class="excel-table" id="uiMetaTable">
-    <thead><tr><th style="min-width:140px;position:sticky;left:0;z-index:11;background:var(--bg-secondary)">fieldName</th>${thHtml}<th></th></tr></thead><tbody>`;
+    <thead><tr><th style="width:32px;position:sticky;left:0;z-index:11;background:var(--bg-secondary)"></th><th style="min-width:140px;position:sticky;left:32px;z-index:11;background:var(--bg-secondary)">fieldName</th>${thHtml}<th></th></tr></thead><tbody>`;
 
-      rows.forEach(row => {
+      rows.forEach((row, rowIdx) => {
+        const modelOpts = schema.models.map(m => m.name);
         const tds = uiHeaders.map(h => {
           const val = row.meta[h.name] !== undefined ? row.meta[h.name] : '';
           if (h.type === 'combo' && h.options.length > 0) {
             const opts = ['', ...h.options].map(o => `<option value="${o}"${o === val ? ' selected' : ''}>${o || '—'}</option>`).join('');
             return `<td style="min-width:100px;padding:4px 8px"><select data-field="${row.fieldName}" data-col="${h.name}" style="width:100%;padding:3px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-primary);color:var(--text-primary);font-size:12px">${opts}</select></td>`;
           }
+          if (h.type === 'model') {
+            const opts = ['', ...modelOpts].map(o => `<option value="${o}"${o === val ? ' selected' : ''}>${o || '—'}</option>`).join('');
+            return `<td style="min-width:120px;padding:4px 8px"><select data-field="${row.fieldName}" data-col="${h.name}" style="width:100%;padding:3px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-primary);color:var(--text-primary);font-size:12px">${opts}</select></td>`;
+          }
           return `<td contenteditable="true" data-field="${row.fieldName}" data-col="${h.name}" style="min-width:90px">${val}</td>`;
         }).join('');
         const extraStyle = row.extraOnly ? 'color:var(--accent2)' : 'color:var(--text-muted)';
+        const canUp = rowIdx > 0;
+        const canDown = rowIdx < rows.length - 1;
         html += `<tr>
-      <td style="font-weight:600;${extraStyle};white-space:nowrap;position:sticky;left:0;background:var(--bg-secondary);z-index:5">${row.fieldName}</td>
+      <td style="text-align:center;white-space:nowrap;position:sticky;left:0;background:var(--bg-secondary);z-index:5;padding:2px 4px">
+        <button title="위로" onclick="uiMoveRow('${row.fieldName}',-1)" style="border:none;background:none;cursor:${canUp?'pointer':'default'};color:${canUp?'var(--accent)':'var(--border)'};font-size:13px;padding:1px 3px">▲</button>
+        <button title="아래로" onclick="uiMoveRow('${row.fieldName}',1)" style="border:none;background:none;cursor:${canDown?'pointer':'default'};color:${canDown?'var(--accent)':'var(--border)'};font-size:13px;padding:1px 3px">▼</button>
+      </td>
+      <td style="font-weight:600;${extraStyle};white-space:nowrap;position:sticky;left:32px;background:var(--bg-secondary);z-index:5">${row.fieldName}</td>
       ${tds}
       <td><button class="btn btn-danger" style="padding:2px 8px;font-size:10px" onclick="uiDelRow('${row.fieldName}')">✕</button></td>
     </tr>`;
@@ -2469,7 +2500,7 @@
     }
     function uiHeaderTypeChange(i, val) {
       uiHeaders[i].type = val;
-      if (val === 'text') uiHeaders[i].options = [];
+      if (val === 'text' || val === 'model') uiHeaders[i].options = [];
       renderUiTable();
     }
     function uiHeaderOptionsChange(i, val) {
@@ -2545,6 +2576,23 @@
     function uiDelRow(fieldName) {
       if (!selectedUiModel || !metaStore[selectedUiModel]) return;
       delete metaStore[selectedUiModel][fieldName];
+      if (rowOrderStore[selectedUiModel]) {
+        rowOrderStore[selectedUiModel] = rowOrderStore[selectedUiModel].filter(n => n !== fieldName);
+      }
+      renderUiTable();
+    }
+
+    function uiMoveRow(fieldName, dir) {
+      if (!selectedUiModel) return;
+      uiApply(); // 현재 값 먼저 저장
+      const order = rowOrderStore[selectedUiModel];
+      if (!order) return;
+      const idx = order.indexOf(fieldName);
+      if (idx < 0) return;
+      const newIdx = idx + dir;
+      if (newIdx < 0 || newIdx >= order.length) return;
+      order.splice(idx, 1);
+      order.splice(newIdx, 0, fieldName);
       renderUiTable();
     }
 
@@ -2772,6 +2820,7 @@
           schema: gen(schema),
           uiHeaders: uiHeaders,
           metaStore: metaStore,
+          rowOrderStore: rowOrderStore,
           todoItems: todoItems,
           suggestItems: suggestItems,
           modelPositions: modelPositions,
@@ -2832,6 +2881,8 @@
         if (data.uiHeaders && data.uiHeaders.length) uiHeaders = data.uiHeaders;
         // UI 메타
         if (data.metaStore) metaStore = data.metaStore;
+        // 행 순서
+        if (data.rowOrderStore) rowOrderStore = data.rowOrderStore;
         // Todo
         if (data.todoItems) todoItems = data.todoItems;
         // 건의함
